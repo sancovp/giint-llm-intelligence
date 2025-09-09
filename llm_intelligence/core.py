@@ -502,7 +502,7 @@ def get_mode_instructions(freestyle: bool = False, execution: bool = False, plan
         return "ERROR: Exactly one mode must be True (freestyle, execution, or planning)"
     
     if planning:
-        return """PLANNING MODE ACTIVE
+        return """PLANNING MODE INSTRUCTIONS
 
 Focus: Structure-building mindset
 
@@ -528,7 +528,7 @@ Planning Workflow:
 This mode establishes the architectural foundation."""
     
     elif execution:
-        return """EXECUTION MODE ACTIVE
+        return """EXECUTION MODE INSTRUCTIONS
 
 Focus: Task-completion mindset
 
@@ -545,7 +545,7 @@ Execution Workflow:
 This mode converts plans into reality."""
     
     else:  # freestyle
-        return """FREESTYLE MODE ACTIVE
+        return """FREESTYLE MODE INSTRUCTIONS
 
 Focus: Exploratory mindset
 Tools: Any GIINT tools without project constraints

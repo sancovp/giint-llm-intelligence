@@ -325,7 +325,6 @@ def list_qa_sessions(project_id: Optional[str] = None) -> Dict[str, Any]:
                         "created_at": qa_data["created_at"],
                         "last_updated": qa_data.get("last_updated"),
                         "responses": len(qa_data.get("responses", [])),
-                        "tracking": qa_data.get("tracking", {}),
                         "one_liner": qa_data["responses"][-1]["one_liner"] if qa_data.get("responses") else None
                     })
         

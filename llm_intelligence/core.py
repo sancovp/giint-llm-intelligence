@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def respond(
     qa_id: str,
-    response_file_path: str,
+    user_prompt_description: str,
     one_liner: str,
     key_tags: List[str],
     involved_files: List[str],
@@ -33,14 +33,16 @@ def respond(
     subtask: str,
     task: str,
     workflow_id: str,
+    response_file_path: Optional[str] = None,
+    simple_response_string: Optional[str] = None,
     is_from_waypoint: bool = False
 ) -> Dict[str, Any]:
     """
-    Harvest response file into QA conversation with full emergent tracking.
+    Harvest response into QA conversation with unified simple/complex interface.
     
     Args:
         qa_id: QA session identifier
-        response_file_path: Path to LLM's response file (can be anywhere)
+        user_prompt_description: LLM's interpretation of user request
         one_liner: Brief summary of what was accomplished
         key_tags: Tags for categorization
         involved_files: Files that were created/modified
@@ -51,6 +53,8 @@ def respond(
         subtask: Subtask being handled (free-form string)
         task: Specific task (free-form string)
         workflow_id: Workflow identifier (free-form string)
+        response_file_path: Path to response file (complex workflow)
+        simple_response_string: Direct response content (simple workflow)
         is_from_waypoint: Whether this is from a STARLOG waypoint
         
     Returns:
@@ -63,22 +67,34 @@ def respond(
             logger.error(f"Project validation failed: {project_result['error']}")
             return {"error": f"Project validation failed: {project_result['error']}"}
         
+        # 2. Handle both simple and complex response modes
+        if simple_response_string and response_file_path:
+            return {"error": "Cannot specify both simple_response_string and response_file_path"}
+        
+        if not simple_response_string and not response_file_path:
+            return {"error": "Must specify either simple_response_string or response_file_path"}
+        
         # Configuration
         base_dir = Path(os.environ.get("LLM_INTELLIGENCE_DIR", "/tmp/llm_intelligence_responses"))
         base_dir.mkdir(parents=True, exist_ok=True)
         
-        # 2. Read response file content from LLM's arbitrary path
-        response_path = Path(response_file_path)
-        if not response_path.exists():
-            logger.error(f"Response file not found: {response_file_path}")
-            return {"error": f"Response file not found: {response_file_path}"}
-        
-        try:
-            with open(response_path, 'r', encoding='utf-8') as f:
-                response_content = f.read()
-        except Exception as e:
-            logger.error(f"Failed to read response file: {e}", exc_info=True)
-            return {"error": f"Failed to read response file: {e}"}
+        # Get response content based on mode
+        if simple_response_string:
+            response_content = simple_response_string
+            response_path = None
+        else:
+            # Complex mode - read from file
+            response_path = Path(response_file_path)
+            if not response_path.exists():
+                logger.error(f"Response file not found: {response_file_path}")
+                return {"error": f"Response file not found: {response_file_path}"}
+            
+            try:
+                with open(response_path, 'r', encoding='utf-8') as f:
+                    response_content = f.read()
+            except Exception as e:
+                logger.error(f"Failed to read response file: {e}", exc_info=True)
+                return {"error": f"Failed to read response file: {e}"}
         
         # 2. Set up organized structure
         qa_dir = base_dir / "qa_sets" / qa_id
@@ -93,6 +109,7 @@ def respond(
                 "qa_id": qa_id,
                 "created_at": datetime.now().isoformat(),
                 "project_id": project_id,
+                "user_prompt_description": user_prompt_description,
                 "tracking": {
                     "feature": feature,
                     "component": component,
@@ -121,25 +138,35 @@ def respond(
         # Determine response number
         response_num = len(qa_data["responses"]) + 1
         
-        # 3. Copy content to organized structure
+        # 3. Save content to organized structure
         response_dir = qa_dir / "responses" / f"response_{response_num:03d}"
         response_dir.mkdir(parents=True, exist_ok=True)
         organized_response_path = response_dir / "response.md"
         
-        try:
-            shutil.copy2(response_path, organized_response_path)
-            logger.info(f"Copied response file to organized structure: {organized_response_path}")
-        except Exception as e:
-            logger.error(f"Failed to copy response file: {e}", exc_info=True)
-            return {"error": f"Failed to copy response file: {e}"}
-        
-        # 4. Delete original response file (cleanup)
-        try:
-            os.remove(response_path)
-            logger.info(f"Deleted original response file: {response_path}")
-        except Exception as e:
-            # Non-fatal - log but continue
-            logger.warning(f"Failed to delete original response file {response_path}: {e}")
+        if response_path:
+            # Complex mode - copy from file
+            try:
+                shutil.copy2(response_path, organized_response_path)
+                logger.info(f"Copied response file to organized structure: {organized_response_path}")
+            except Exception as e:
+                logger.error(f"Failed to copy response file: {e}", exc_info=True)
+                return {"error": f"Failed to copy response file: {e}"}
+            
+            # Delete original response file (cleanup)
+            try:
+                os.remove(response_path)
+                logger.info(f"Deleted original response file: {response_path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete original response file {response_path}: {e}")
+        else:
+            # Simple mode - write content directly
+            try:
+                with open(organized_response_path, 'w', encoding='utf-8') as f:
+                    f.write(response_content)
+                logger.info(f"Wrote simple response to organized structure: {organized_response_path}")
+            except Exception as e:
+                logger.error(f"Failed to write simple response: {e}", exc_info=True)
+                return {"error": f"Failed to write simple response: {e}"}
         
         # 5. Update QA conversation - JSON handles all escaping automatically
         response_entry = {
@@ -176,15 +203,21 @@ def respond(
             # Non-fatal - STARLOG integration might not be available
             logger.warning(f"STARLOG logging failed: {e}")
         
-        return {
+        result = {
             "success": True,
             "qa_id": qa_id,
             "response_id": response_num,
             "organized_path": str(organized_response_path),
-            "original_path_deleted": str(response_path),
             "one_liner": one_liner,
-            "tracking": qa_data["tracking"]
+            "user_prompt_description": user_prompt_description,
+            "tracking": qa_data["tracking"],
+            "mode": "simple" if simple_response_string else "complex"
         }
+        
+        if response_path:
+            result["original_path_deleted"] = str(response_path)
+        
+        return result
         
     except Exception as e:
         logger.error(f"Unexpected error in respond(): {e}", exc_info=True)
@@ -336,19 +369,29 @@ def _save_qa_file(qa_file_path: Path, qa_data: Dict[str, Any]) -> None:
 
 def llms_must_use_this_to_be_intelligent() -> str:
     """
-    Returns a simple guide for LLMs to use the LLM Intelligence system.
+    Returns a complete guide for LLMs to use the GIINT system.
     
     Returns:
-        Concise usage instructions for achieving multi-fire intelligence
+        Complete usage instructions including decision branches
     """
     return """GIINT - General Intuitive Intelligence for Neural Transformers:
 
+# GIINT Decision Branches
+GIINT is a way of being. These two decision branches encapsulate how it works:
+- Generally speaking, if the user prompt requires some simple response, just use the respond() tool with respond(..., simple_response_string="...")
+  - But when the response is complex, use llms_must_use_this_to_be_intelligent() and then follow the complex workflow.
+GIINT is very simple. You don't need to remember everything about it all the time, instead just remember to call llms_must_use_this_to_be_intelligent() and then follow the instructions.
+
+# Complex Workflow (Multi-fire Intelligence)
 1. Check/create project: create_project(project_id, project_dir) if needed
 2. Write initial response: Write("/tmp/response.md", "Initial insight...")
 3. Think more (use tools, explore, research)
 4. Edit/expand response: Edit("/tmp/response.md", ...) - ADD MORE INSIGHTS
 5. Continue cycle: Think → Edit → Think → Edit (response grows with understanding)
-6. Harvest when complete: respond(qa_id, "/tmp/response.md", one_liner, tags, files, ...)
+6. Harvest when complete: respond(qa_id, user_prompt_description, one_liner, tags, files, response_file_path="/tmp/response.md")
+
+# Simple Workflow (Direct Response)
+respond(qa_id, user_prompt_description, one_liner, tags, files, simple_response_string="Direct answer here")
 
 KEY BREAKTHROUGH: You can edit the response file multiple times before harvesting!
 This enables iterative intelligence development within cognitive separation.

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="giint-llm-intelligence",
-    version="0.1.0",
+    version="0.1.1",
     description="GIINT - General Intuitive Intelligence for Neural Transformers: Multi-fire cognitive architecture",
     author="Isaac",
     packages=find_packages(),

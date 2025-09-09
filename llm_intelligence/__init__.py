@@ -20,8 +20,13 @@ from .projects import (
     delete_project,
     add_feature_to_project,
     add_component_to_feature,
-    add_task_to_component,
-    update_task_status
+    add_deliverable_to_component,
+    add_task_to_deliverable,
+    update_task_status,
+    add_spec_to_feature,
+    add_spec_to_component,
+    add_spec_to_deliverable,
+    add_spec_to_task
 )
 
 __version__ = "0.1.0"
@@ -39,6 +44,11 @@ __all__ = [
     "delete_project",
     "add_feature_to_project",
     "add_component_to_feature",
-    "add_task_to_component",
-    "update_task_status"
+    "add_deliverable_to_component",
+    "add_task_to_deliverable",
+    "update_task_status",
+    "add_spec_to_feature",
+    "add_spec_to_component",
+    "add_spec_to_deliverable",
+    "add_spec_to_task"
 ]

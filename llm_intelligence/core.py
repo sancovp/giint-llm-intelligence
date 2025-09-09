@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from .projects import get_project
+from .projects import get_project, update_project_mode
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -395,6 +395,168 @@ respond(qa_id, user_prompt_description, one_liner, tags, files, simple_response_
 KEY BREAKTHROUGH: You can edit the response file multiple times before harvesting!
 This enables iterative intelligence development within cognitive separation.
 Your thinking (tools) stays messy, your communication (response file) evolves and improves."""
+
+
+def get_current_mode(project_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Get current mode for project or global state.
+    
+    Args:
+        project_id: Project to check mode for (None for global)
+        
+    Returns:
+        Current mode information
+    """
+    if project_id is None:
+        return {"project_id": None, "mode": "freestyle"}
+    
+    # Get mode from project JSON
+    project_result = get_project(project_id)
+    if "error" in project_result:
+        return {"project_id": project_id, "mode": "planning"}  # Default if project not found
+    
+    mode = project_result["project"].get("mode", "planning")
+    return {"project_id": project_id, "mode": mode}
+
+
+def set_mode(planning: bool = False, execution: bool = False, freestyle: bool = False, project_id: Optional[str] = None) -> str:
+    """
+    Set the current working mode for GIINT.
+    
+    Args:
+        planning: Planning mode - create projects, features, components, tasks
+        execution: Execution mode - do work using TodoWrite for emergent subtasks  
+        freestyle: Freestyle mode - work without project constraints
+        project_id: Project to set mode for (required unless freestyle)
+        
+    Returns:
+        Confirmation message with instructions
+    """
+    # Validate exactly one mode is True
+    modes = [planning, execution, freestyle]
+    if sum(modes) != 1:
+        return "ERROR: Exactly one mode must be True (planning, execution, or freestyle)"
+    
+    if freestyle:
+        if project_id:
+            return "ERROR: Freestyle mode cannot have project_id"
+        return "MODE SET TO FREESTYLE. Use get_mode_instructions() to continue"
+    
+    if not project_id:
+        return "ERROR: Planning and execution modes require project_id"
+    
+    # Validate project exists
+    project_result = get_project(project_id)
+    if "error" in project_result:
+        return f"ERROR: Project {project_id} not found"
+    
+    if execution:
+        # Validate tasks are ready for execution mode
+        if not _has_ready_tasks(project_id):
+            return "ERROR: Mode cannot be execute if no tasks are ready"
+        mode = "execution"
+    else:
+        mode = "planning"
+    
+    # Update mode in project JSON
+    result = update_project_mode(project_id, mode)
+    if "error" in result:
+        return f"ERROR: Failed to update project mode: {result['error']}"
+    
+    logger.info(f"Mode set to {mode} for project {project_id}")
+    
+    return f"MODE SET TO {mode.upper()} for project {project_id}. Use get_mode_instructions() to continue"
+
+
+def _has_ready_tasks(project_id: str) -> bool:
+    """Check if project has any ready tasks."""
+    project_result = get_project(project_id)
+    if "error" in project_result:
+        return False
+    
+    project = project_result["project"]
+    for feature in project.get("features", {}).values():
+        for component in feature.get("components", {}).values():
+            for deliverable in component.get("deliverables", {}).values():
+                for task in deliverable.get("tasks", {}).values():
+                    if task.get("is_ready", False):
+                        return True
+    return False
+
+
+def get_mode_instructions(freestyle: bool = False, execution: bool = False, planning: bool = False) -> str:
+    """
+    Get instructions for the specified mode.
+    
+    Args:
+        freestyle: Get freestyle mode instructions
+        execution: Get execution mode instructions  
+        planning: Get planning mode instructions
+    
+    Returns:
+        Mode-specific instructions
+    """
+    # Validate exactly one mode is True
+    modes = [freestyle, execution, planning]
+    if sum(modes) != 1:
+        return "ERROR: Exactly one mode must be True (freestyle, execution, or planning)"
+    
+    if planning:
+        return """PLANNING MODE ACTIVE
+
+Focus: Structure-building mindset
+
+Project Inspection Tools:
+• list_projects() - View all existing projects
+• get_project(project_id) - Inspect specific project structure
+• get_current_mode(project_id) - Check project's current mode
+
+Structure Creation Tools:
+• create_project() → add_feature_to_project() → add_component_to_feature() → add_deliverable_to_component() → add_task_to_deliverable()
+
+Spec Management Tools:
+• add_spec_to_feature() → add_spec_to_component() → add_spec_to_deliverable() → add_spec_to_task()
+
+Planning Workflow:
+1. Inspect existing projects with list_projects() and get_project()
+2. Create project structure or modify existing
+3. Break down into features, components, deliverables, tasks  
+4. Add specs at each level for complete specification
+5. Tasks become ready automatically when all specs exist
+6. Switch to execution mode when tasks are ready
+
+This mode establishes the architectural foundation."""
+    
+    elif execution:
+        return """EXECUTION MODE ACTIVE
+
+Focus: Task-completion mindset
+
+Two-Track System:
+• TodoWrite - For emergent subtasks and implementation details
+• update_task_status() - For formal project task status updates
+
+Execution Workflow:
+1. Use TodoWrite to break down current work into actionable steps
+2. Complete implementation work iteratively using TodoWrite
+3. Update formal project task status with update_task_status() as milestones complete
+4. Focus on delivery and implementation details
+
+This mode converts plans into reality."""
+    
+    else:  # freestyle
+        return """FREESTYLE MODE ACTIVE
+
+Focus: Exploratory mindset
+Tools: Any GIINT tools without project constraints
+
+Freestyle Workflow:
+1. Work on any task without formal project structure
+2. Use respond() for capturing insights
+3. Explore, experiment, and iterate freely
+4. Switch to planning mode when structure is needed
+
+This mode enables unconstrained exploration."""
 
 
 def remind_me_what_giint_is() -> str:

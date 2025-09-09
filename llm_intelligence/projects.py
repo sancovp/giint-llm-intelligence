@@ -36,10 +36,11 @@ class AssigneeType(str, Enum):
 class Task(BaseModel):
     """Task model with status tracking."""
     task_id: str = Field(..., description="Task identifier")
+    spec: Optional["TaskSpec"] = Field(None, description="Task rollup specification")
     status: TaskStatus = Field(TaskStatus.READY, description="Current task status")
     is_blocked: bool = Field(False, description="Whether task is blocked")
     blocked_description: Optional[str] = Field(None, description="Why task is blocked")
-    is_ready: bool = Field(True, description="Whether task is ready to work on")
+    is_ready: bool = Field(False, description="Whether task is ready to work on")
     assignee: AssigneeType = Field(..., description="Who is assigned to this task")
     agent_id: Optional[str] = Field(None, description="Agent ID if assignee is AI")
     human_name: Optional[str] = Field(None, description="Human name if assignee is HUMAN")
@@ -65,16 +66,58 @@ class Task(BaseModel):
         return v
 
 
+class FeatureSpec(BaseModel):
+    """Feature specification."""
+    spec_file_path: str = Field(..., description="Path to feature spec JSON file")
+    status: str = Field("draft", description="draft|review|approved")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class ComponentSpec(BaseModel):
+    """Component specification."""
+    spec_file_path: str = Field(..., description="Path to component spec JSON file")
+    status: str = Field("draft", description="draft|review|approved")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class DeliverableSpec(BaseModel):
+    """Deliverable specification."""
+    spec_file_path: str = Field(..., description="Path to deliverable spec JSON file")
+    status: str = Field("draft", description="draft|review|approved")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class TaskSpec(BaseModel):
+    """Task rollup specification containing all parent specs."""
+    spec_file_path: str = Field(..., description="Path to task rollup spec JSON file")
+    status: str = Field("draft", description="draft|review|approved")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
+class Deliverable(BaseModel):
+    """Deliverable containing tasks that produce it."""
+    deliverable_name: str = Field(..., description="Deliverable name")
+    spec: Optional[DeliverableSpec] = Field(None, description="Deliverable specification")
+    tasks: Dict[str, Task] = Field(default_factory=dict, description="Tasks that produce this deliverable")
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+
+
 class Component(BaseModel):
-    """Component containing tasks."""
+    """Component containing deliverables."""
     component_name: str = Field(..., description="Component name")
-    tasks: Dict[str, Task] = Field(default_factory=dict, description="Tasks in this component")
+    spec: Optional[ComponentSpec] = Field(None, description="Component specification")
+    deliverables: Dict[str, Deliverable] = Field(default_factory=dict, description="Deliverables in this component")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 
 class Feature(BaseModel):
     """Feature containing components."""
     feature_name: str = Field(..., description="Feature name")
+    spec: Optional[FeatureSpec] = Field(None, description="Feature specification")
     components: Dict[str, Component] = Field(default_factory=dict, description="Components in this feature")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
@@ -84,6 +127,7 @@ class Project(BaseModel):
     
     project_id: str = Field(..., description="Unique project identifier")
     project_dir: str = Field(..., description="Path to project directory") 
+    mode: str = Field("planning", description="Current project mode: planning|execution")
     starlog_path: Optional[str] = Field(None, description="Optional path to STARLOG project")
     features: Dict[str, Feature] = Field(default_factory=dict, description="Features in this project")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
@@ -350,8 +394,8 @@ class ProjectRegistry:
             logger.error(f"Failed to add component {component_name} to feature {feature_name}: {e}", exc_info=True)
             return {"error": f"Failed to add component: {e}"}
     
-    def add_task_to_component(self, project_id: str, feature_name: str, component_name: str, task_id: str, is_human_only_task: bool, agent_id: Optional[str] = None, human_name: Optional[str] = None) -> Dict[str, Any]:
-        """Add task to component."""
+    def add_deliverable_to_component(self, project_id: str, feature_name: str, component_name: str, deliverable_name: str) -> Dict[str, Any]:
+        """Add deliverable to component."""
         try:
             projects = self._load_projects()
             
@@ -364,8 +408,44 @@ class ProjectRegistry:
             if component_name not in projects[project_id].features[feature_name].components:
                 return {"error": f"Component {component_name} not found in feature {feature_name}"}
             
-            if task_id in projects[project_id].features[feature_name].components[component_name].tasks:
-                return {"error": f"Task {task_id} already exists in component {component_name}"}
+            if deliverable_name in projects[project_id].features[feature_name].components[component_name].deliverables:
+                return {"error": f"Deliverable {deliverable_name} already exists in component {component_name}"}
+            
+            # Add deliverable
+            projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name] = Deliverable(
+                deliverable_name=deliverable_name
+            )
+            projects[project_id].updated_at = datetime.now().isoformat()
+            
+            # Save
+            self._save_projects(projects)
+            
+            logger.info(f"Added deliverable {deliverable_name} to component {component_name}")
+            return {"success": True, "message": f"Deliverable {deliverable_name} added to component {component_name}"}
+            
+        except Exception as e:
+            logger.error(f"Failed to add deliverable {deliverable_name} to component {component_name}: {e}", exc_info=True)
+            return {"error": f"Failed to add deliverable: {e}"}
+
+    def add_task_to_deliverable(self, project_id: str, feature_name: str, component_name: str, deliverable_name: str, task_id: str, is_human_only_task: bool, agent_id: Optional[str] = None, human_name: Optional[str] = None) -> Dict[str, Any]:
+        """Add task to deliverable."""
+        try:
+            projects = self._load_projects()
+            
+            if project_id not in projects:
+                return {"error": f"Project {project_id} not found"}
+                
+            if feature_name not in projects[project_id].features:
+                return {"error": f"Feature {feature_name} not found in project {project_id}"}
+            
+            if component_name not in projects[project_id].features[feature_name].components:
+                return {"error": f"Component {component_name} not found in feature {feature_name}"}
+            
+            if deliverable_name not in projects[project_id].features[feature_name].components[component_name].deliverables:
+                return {"error": f"Deliverable {deliverable_name} not found in component {component_name}"}
+            
+            if task_id in projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].tasks:
+                return {"error": f"Task {task_id} already exists in deliverable {deliverable_name}"}
             
             # Determine assignee based on is_human_only_task
             if is_human_only_task:
@@ -378,7 +458,7 @@ class ProjectRegistry:
                     return {"error": "agent_id is required for AI tasks"}
             
             # Add task
-            projects[project_id].features[feature_name].components[component_name].tasks[task_id] = Task(
+            projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].tasks[task_id] = Task(
                 task_id=task_id,
                 assignee=assignee,
                 agent_id=agent_id,
@@ -389,18 +469,189 @@ class ProjectRegistry:
             # Save
             self._save_projects(projects)
             
-            logger.info(f"Added task {task_id} to component {component_name}")
-            return {"success": True, "message": f"Task {task_id} added to component {component_name}"}
+            logger.info(f"Added task {task_id} to deliverable {deliverable_name}")
+            return {"success": True, "message": f"Task {task_id} added to deliverable {deliverable_name}"}
             
         except Exception as e:
-            logger.error(f"Failed to add task {task_id} to component {component_name}: {e}", exc_info=True)
+            logger.error(f"Failed to add task {task_id} to deliverable {deliverable_name}: {e}", exc_info=True)
             return {"error": f"Failed to add task: {e}"}
+    
+    def add_spec_to_feature(self, project_id: str, feature_name: str, spec_file_path: str) -> Dict[str, Any]:
+        """Add spec to feature."""
+        try:
+            projects = self._load_projects()
+            
+            if project_id not in projects:
+                return {"error": f"Project {project_id} not found"}
+                
+            if feature_name not in projects[project_id].features:
+                return {"error": f"Feature {feature_name} not found in project {project_id}"}
+            
+            # Add feature spec
+            projects[project_id].features[feature_name].spec = FeatureSpec(spec_file_path=spec_file_path)
+            projects[project_id].updated_at = datetime.now().isoformat()
+            
+            # Save
+            self._save_projects(projects)
+            
+            logger.info(f"Added spec to feature {feature_name}")
+            return {"success": True, "message": f"Spec added to feature {feature_name}"}
+            
+        except Exception as e:
+            logger.error(f"Failed to add spec to feature {feature_name}: {e}", exc_info=True)
+            return {"error": f"Failed to add spec: {e}"}
+    
+    def add_spec_to_component(self, project_id: str, feature_name: str, component_name: str, spec_file_path: str) -> Dict[str, Any]:
+        """Add spec to component."""
+        try:
+            projects = self._load_projects()
+            
+            if project_id not in projects:
+                return {"error": f"Project {project_id} not found"}
+                
+            if feature_name not in projects[project_id].features:
+                return {"error": f"Feature {feature_name} not found in project {project_id}"}
+            
+            if component_name not in projects[project_id].features[feature_name].components:
+                return {"error": f"Component {component_name} not found in feature {feature_name}"}
+            
+            # Add component spec
+            projects[project_id].features[feature_name].components[component_name].spec = ComponentSpec(spec_file_path=spec_file_path)
+            projects[project_id].updated_at = datetime.now().isoformat()
+            
+            # Save
+            self._save_projects(projects)
+            
+            logger.info(f"Added spec to component {component_name}")
+            return {"success": True, "message": f"Spec added to component {component_name}"}
+            
+        except Exception as e:
+            logger.error(f"Failed to add spec to component {component_name}: {e}", exc_info=True)
+            return {"error": f"Failed to add spec: {e}"}
+    
+    def add_spec_to_deliverable(self, project_id: str, feature_name: str, component_name: str, deliverable_name: str, spec_file_path: str) -> Dict[str, Any]:
+        """Add spec to deliverable."""
+        try:
+            projects = self._load_projects()
+            
+            if project_id not in projects:
+                return {"error": f"Project {project_id} not found"}
+                
+            if feature_name not in projects[project_id].features:
+                return {"error": f"Feature {feature_name} not found in project {project_id}"}
+            
+            if component_name not in projects[project_id].features[feature_name].components:
+                return {"error": f"Component {component_name} not found in feature {feature_name}"}
+            
+            if deliverable_name not in projects[project_id].features[feature_name].components[component_name].deliverables:
+                return {"error": f"Deliverable {deliverable_name} not found in component {component_name}"}
+            
+            # Add deliverable spec
+            projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].spec = DeliverableSpec(spec_file_path=spec_file_path)
+            projects[project_id].updated_at = datetime.now().isoformat()
+            
+            # Save
+            self._save_projects(projects)
+            
+            logger.info(f"Added spec to deliverable {deliverable_name}")
+            return {"success": True, "message": f"Spec added to deliverable {deliverable_name}"}
+            
+        except Exception as e:
+            logger.error(f"Failed to add spec to deliverable {deliverable_name}: {e}", exc_info=True)
+            return {"error": f"Failed to add spec: {e}"}
+    
+    def add_spec_to_task(self, project_id: str, feature_name: str, component_name: str, deliverable_name: str, task_id: str, spec_file_path: str) -> Dict[str, Any]:
+        """Add rollup spec to task."""
+        try:
+            projects = self._load_projects()
+            
+            if project_id not in projects:
+                return {"error": f"Project {project_id} not found"}
+                
+            if feature_name not in projects[project_id].features:
+                return {"error": f"Feature {feature_name} not found in project {project_id}"}
+            
+            if component_name not in projects[project_id].features[feature_name].components:
+                return {"error": f"Component {component_name} not found in feature {feature_name}"}
+            
+            if deliverable_name not in projects[project_id].features[feature_name].components[component_name].deliverables:
+                return {"error": f"Deliverable {deliverable_name} not found in component {component_name}"}
+            
+            if task_id not in projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].tasks:
+                return {"error": f"Task {task_id} not found in deliverable {deliverable_name}"}
+            
+            # Add task rollup spec
+            projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].tasks[task_id].spec = TaskSpec(spec_file_path=spec_file_path)
+            
+            # Check if task now has complete specs and mark as ready if so
+            if self._task_has_complete_specs(projects[project_id], feature_name, component_name, deliverable_name, task_id):
+                projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].tasks[task_id].is_ready = True
+                logger.info(f"Task {task_id} now has complete specs and is marked ready")
+            
+            projects[project_id].updated_at = datetime.now().isoformat()
+            
+            # Save
+            self._save_projects(projects)
+            
+            logger.info(f"Added rollup spec to task {task_id}")
+            return {"success": True, "message": f"Rollup spec added to task {task_id}"}
+            
+        except Exception as e:
+            logger.error(f"Failed to add spec to task {task_id}: {e}", exc_info=True)
+            return {"error": f"Failed to add spec: {e}"}
+    
+    def update_project_mode(self, project_id: str, mode: str) -> Dict[str, Any]:
+        """Update project mode and save to JSON."""
+        try:
+            projects = self._load_projects()
+            
+            if project_id not in projects:
+                return {"error": f"Project {project_id} not found"}
+            
+            # Update mode
+            projects[project_id].mode = mode
+            projects[project_id].updated_at = datetime.now().isoformat()
+            
+            # Save
+            self._save_projects(projects)
+            
+            logger.info(f"Updated project {project_id} mode to {mode}")
+            return {"success": True, "message": f"Project {project_id} mode updated to {mode}"}
+            
+        except Exception as e:
+            logger.error(f"Failed to update project {project_id} mode: {e}", exc_info=True)
+            return {"error": f"Failed to update project mode: {e}"}
+    
+    def _task_has_complete_specs(self, project: Project, feature_name: str, component_name: str, deliverable_name: str, task_id: str) -> bool:
+        """Check if task has complete spec hierarchy (feature, component, deliverable, task specs)."""
+        try:
+            feature = project.features.get(feature_name)
+            if not feature or not feature.spec:
+                return False
+            
+            component = feature.components.get(component_name) 
+            if not component or not component.spec:
+                return False
+                
+            deliverable = component.deliverables.get(deliverable_name)
+            if not deliverable or not deliverable.spec:
+                return False
+                
+            task = deliverable.tasks.get(task_id)
+            if not task or not task.spec:
+                return False
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error checking task specs: {e}")
+            return False
     
     def update_task_status(
         self, 
         project_id: str, 
         feature_name: str, 
         component_name: str, 
+        deliverable_name: str,
         task_id: str,
         is_done: bool,
         is_blocked: bool,
@@ -420,11 +671,14 @@ class ProjectRegistry:
             if component_name not in projects[project_id].features[feature_name].components:
                 return {"error": f"Component {component_name} not found in feature {feature_name}"}
             
-            if task_id not in projects[project_id].features[feature_name].components[component_name].tasks:
-                return {"error": f"Task {task_id} not found in component {component_name}"}
+            if deliverable_name not in projects[project_id].features[feature_name].components[component_name].deliverables:
+                return {"error": f"Deliverable {deliverable_name} not found in component {component_name}"}
+            
+            if task_id not in projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].tasks:
+                return {"error": f"Task {task_id} not found in deliverable {deliverable_name}"}
             
             # Get task
-            task = projects[project_id].features[feature_name].components[component_name].tasks[task_id]
+            task = projects[project_id].features[feature_name].components[component_name].deliverables[deliverable_name].tasks[task_id]
             
             # Update status based on parameters
             if is_blocked:
@@ -434,6 +688,10 @@ class ProjectRegistry:
                 task.status = TaskStatus.IN_REVIEW  # is_done sets to in_review, not done
             elif task.status == TaskStatus.READY and is_ready:
                 task.status = TaskStatus.IN_PROGRESS
+            
+            # Validate specs before allowing is_ready=True
+            if is_ready and not self._task_has_complete_specs(projects[project_id], feature_name, component_name, deliverable_name, task_id):
+                return {"error": f"Task {task_id} cannot be ready - missing required specs (feature, component, deliverable, and task specs must all exist)"}
             
             task.is_blocked = is_blocked
             task.is_ready = is_ready
@@ -496,14 +754,19 @@ def add_component_to_feature(project_id: str, feature_name: str, component_name:
     """Add component to feature."""
     return get_registry().add_component_to_feature(project_id, feature_name, component_name)
 
-def add_task_to_component(project_id: str, feature_name: str, component_name: str, task_id: str, is_human_only_task: bool, agent_id: Optional[str] = None, human_name: Optional[str] = None) -> Dict[str, Any]:
-    """Add task to component."""
-    return get_registry().add_task_to_component(project_id, feature_name, component_name, task_id, is_human_only_task, agent_id, human_name)
+def add_deliverable_to_component(project_id: str, feature_name: str, component_name: str, deliverable_name: str) -> Dict[str, Any]:
+    """Add deliverable to component."""
+    return get_registry().add_deliverable_to_component(project_id, feature_name, component_name, deliverable_name)
+
+def add_task_to_deliverable(project_id: str, feature_name: str, component_name: str, deliverable_name: str, task_id: str, is_human_only_task: bool, agent_id: Optional[str] = None, human_name: Optional[str] = None) -> Dict[str, Any]:
+    """Add task to deliverable."""
+    return get_registry().add_task_to_deliverable(project_id, feature_name, component_name, deliverable_name, task_id, is_human_only_task, agent_id, human_name)
 
 def update_task_status(
     project_id: str, 
     feature_name: str, 
     component_name: str, 
+    deliverable_name: str,
     task_id: str,
     is_done: bool,
     is_blocked: bool,
@@ -512,6 +775,26 @@ def update_task_status(
 ) -> Dict[str, Any]:
     """Update task status."""
     return get_registry().update_task_status(
-        project_id, feature_name, component_name, task_id,
+        project_id, feature_name, component_name, deliverable_name, task_id,
         is_done, is_blocked, blocked_description, is_ready
     )
+
+def add_spec_to_feature(project_id: str, feature_name: str, spec_file_path: str) -> Dict[str, Any]:
+    """Add spec to feature."""
+    return get_registry().add_spec_to_feature(project_id, feature_name, spec_file_path)
+
+def add_spec_to_component(project_id: str, feature_name: str, component_name: str, spec_file_path: str) -> Dict[str, Any]:
+    """Add spec to component."""
+    return get_registry().add_spec_to_component(project_id, feature_name, component_name, spec_file_path)
+
+def add_spec_to_deliverable(project_id: str, feature_name: str, component_name: str, deliverable_name: str, spec_file_path: str) -> Dict[str, Any]:
+    """Add spec to deliverable."""
+    return get_registry().add_spec_to_deliverable(project_id, feature_name, component_name, deliverable_name, spec_file_path)
+
+def add_spec_to_task(project_id: str, feature_name: str, component_name: str, deliverable_name: str, task_id: str, spec_file_path: str) -> Dict[str, Any]:
+    """Add rollup spec to task."""
+    return get_registry().add_spec_to_task(project_id, feature_name, component_name, deliverable_name, task_id, spec_file_path)
+
+def update_project_mode(project_id: str, mode: str) -> Dict[str, Any]:
+    """Update project mode."""
+    return get_registry().update_project_mode(project_id, mode)

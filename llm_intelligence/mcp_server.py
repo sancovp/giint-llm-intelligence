@@ -16,7 +16,10 @@ from .core import (
     get_qa_context as core_get_qa_context,
     list_qa_sessions as core_list_qa_sessions,
     llms_must_use_this_to_be_intelligent as core_llms_guide,
-    remind_me_what_giint_is as core_giint_reminder
+    remind_me_what_giint_is as core_giint_reminder,
+    set_mode as core_set_mode,
+    get_mode_instructions as core_get_mode_instructions,
+    get_current_mode as core_get_current_mode
 )
 
 from .projects import (
@@ -27,8 +30,13 @@ from .projects import (
     delete_project as core_delete_project,
     add_feature_to_project as core_add_feature_to_project,
     add_component_to_feature as core_add_component_to_feature,
-    add_task_to_component as core_add_task_to_component,
-    update_task_status as core_update_task_status
+    add_deliverable_to_component as core_add_deliverable_to_component,
+    add_task_to_deliverable as core_add_task_to_deliverable,
+    update_task_status as core_update_task_status,
+    add_spec_to_feature as core_add_spec_to_feature,
+    add_spec_to_component as core_add_spec_to_component,
+    add_spec_to_deliverable as core_add_spec_to_deliverable,
+    add_spec_to_task as core_add_spec_to_task
 )
 
 # Setup logging
@@ -63,7 +71,9 @@ async def respond(
     """
     mode = "simple" if simple_response_string else "complex"
     logger.info(f"Processing respond() for qa_id: {qa_id} in {mode} mode")
-    return core_respond(
+    
+    # Call core function but return minimal info to LLM
+    result = core_respond(
         qa_id=qa_id,
         user_prompt_description=user_prompt_description,
         one_liner=one_liner,
@@ -80,6 +90,15 @@ async def respond(
         simple_response_string=simple_response_string,
         is_from_waypoint=is_from_waypoint
     )
+    
+    # Return minimal confirmation to reduce token bloat for LLM
+    if result.get("success"):
+        return {
+            "success": True,
+            "message": f"Response {result['response_id']} harvested for {qa_id}"
+        }
+    else:
+        return result  # Return full error details if something went wrong
 
 
 @mcp.tool()
@@ -155,6 +174,65 @@ async def remind_me_what_giint_is() -> str:
     """
     logger.info("Providing GIINT definition")
     return core_giint_reminder()
+
+
+@mcp.tool()
+async def set_mode(
+    planning: bool = False,
+    execution: bool = False,
+    freestyle: bool = False,
+    project_id: Optional[str] = None
+) -> str:
+    """
+    Set the current working mode for GIINT.
+    
+    Args:
+        planning: Planning mode - create projects, features, components, tasks
+        execution: Execution mode - do work using TodoWrite for emergent subtasks  
+        freestyle: Freestyle mode - work without project constraints
+        project_id: Project to set mode for (required unless freestyle)
+        
+    Returns:
+        Confirmation message with instructions
+    """
+    logger.info(f"Setting mode: planning={planning}, execution={execution}, freestyle={freestyle}, project_id={project_id}")
+    return core_set_mode(planning, execution, freestyle, project_id)
+
+
+@mcp.tool()
+async def get_current_mode(project_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Get current mode for project or global state.
+    
+    Args:
+        project_id: Project to check mode for (None for global)
+        
+    Returns:
+        Current mode information
+    """
+    logger.info(f"Getting current mode for project_id: {project_id}")
+    return core_get_current_mode(project_id)
+
+
+@mcp.tool()
+async def get_mode_instructions(
+    freestyle: bool = False,
+    execution: bool = False, 
+    planning: bool = False
+) -> str:
+    """
+    Get instructions for the specified mode.
+    
+    Args:
+        freestyle: Get freestyle mode instructions
+        execution: Get execution mode instructions
+        planning: Get planning mode instructions
+    
+    Returns:
+        Mode-specific instructions for planning, execution, or freestyle
+    """
+    logger.info("Providing mode-specific instructions")
+    return core_get_mode_instructions(freestyle=freestyle, execution=execution, planning=planning)
 
 
 # Project Management Tools
@@ -284,22 +362,47 @@ async def add_component_to_feature(
 
 
 @mcp.tool()
-async def add_task_to_component(
+async def add_deliverable_to_component(
     project_id: str,
     feature_name: str,
     component_name: str,
+    deliverable_name: str
+) -> Dict[str, Any]:
+    """
+    Add deliverable to component.
+    
+    Args:
+        project_id: Project identifier
+        feature_name: Feature name
+        component_name: Component name
+        deliverable_name: Deliverable name to add
+        
+    Returns:
+        Deliverable addition result
+    """
+    logger.info(f"Adding deliverable {deliverable_name} to component {component_name}")
+    return core_add_deliverable_to_component(project_id, feature_name, component_name, deliverable_name)
+
+
+@mcp.tool()
+async def add_task_to_deliverable(
+    project_id: str,
+    feature_name: str,
+    component_name: str,
+    deliverable_name: str,
     task_id: str,
     is_human_only_task: bool,
     agent_id: Optional[str] = None,
     human_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Add task to component.
+    Add task to deliverable.
     
     Args:
         project_id: Project identifier
         feature_name: Feature name
         component_name: Component name
+        deliverable_name: Deliverable name
         task_id: Task identifier
         is_human_only_task: Whether task requires human
         agent_id: Agent ID if AI task
@@ -308,9 +411,9 @@ async def add_task_to_component(
     Returns:
         Task addition result
     """
-    logger.info(f"Adding task {task_id} to component {component_name}")
-    return core_add_task_to_component(
-        project_id, feature_name, component_name, task_id,
+    logger.info(f"Adding task {task_id} to deliverable {deliverable_name}")
+    return core_add_task_to_deliverable(
+        project_id, feature_name, component_name, deliverable_name, task_id,
         is_human_only_task, agent_id, human_name
     )
 
@@ -320,6 +423,7 @@ async def update_task_status(
     project_id: str,
     feature_name: str,
     component_name: str,
+    deliverable_name: str,
     task_id: str,
     is_done: bool,
     is_blocked: bool,
@@ -332,7 +436,8 @@ async def update_task_status(
     Args:
         project_id: Project identifier
         feature_name: Feature name
-        component_name: Component name  
+        component_name: Component name
+        deliverable_name: Deliverable name
         task_id: Task identifier
         is_done: Whether task is done
         is_blocked: Whether task is blocked
@@ -344,9 +449,105 @@ async def update_task_status(
     """
     logger.info(f"Updating status for task {task_id}")
     return core_update_task_status(
-        project_id, feature_name, component_name, task_id,
+        project_id, feature_name, component_name, deliverable_name, task_id,
         is_done, is_blocked, blocked_description, is_ready
     )
+
+
+@mcp.tool()
+async def add_spec_to_feature(
+    project_id: str,
+    feature_name: str,
+    spec_file_path: str
+) -> Dict[str, Any]:
+    """
+    Add spec to feature.
+    
+    Args:
+        project_id: Project identifier
+        feature_name: Feature name
+        spec_file_path: Path to feature spec JSON file
+        
+    Returns:
+        Spec addition result
+    """
+    logger.info(f"Adding spec to feature {feature_name}")
+    return core_add_spec_to_feature(project_id, feature_name, spec_file_path)
+
+
+@mcp.tool()
+async def add_spec_to_component(
+    project_id: str,
+    feature_name: str,
+    component_name: str,
+    spec_file_path: str
+) -> Dict[str, Any]:
+    """
+    Add spec to component.
+    
+    Args:
+        project_id: Project identifier
+        feature_name: Feature name
+        component_name: Component name
+        spec_file_path: Path to component spec JSON file
+        
+    Returns:
+        Spec addition result
+    """
+    logger.info(f"Adding spec to component {component_name}")
+    return core_add_spec_to_component(project_id, feature_name, component_name, spec_file_path)
+
+
+@mcp.tool()
+async def add_spec_to_deliverable(
+    project_id: str,
+    feature_name: str,
+    component_name: str,
+    deliverable_name: str,
+    spec_file_path: str
+) -> Dict[str, Any]:
+    """
+    Add spec to deliverable.
+    
+    Args:
+        project_id: Project identifier
+        feature_name: Feature name
+        component_name: Component name
+        deliverable_name: Deliverable name
+        spec_file_path: Path to deliverable spec JSON file
+        
+    Returns:
+        Spec addition result
+    """
+    logger.info(f"Adding spec to deliverable {deliverable_name}")
+    return core_add_spec_to_deliverable(project_id, feature_name, component_name, deliverable_name, spec_file_path)
+
+
+@mcp.tool()
+async def add_spec_to_task(
+    project_id: str,
+    feature_name: str,
+    component_name: str,
+    deliverable_name: str,
+    task_id: str,
+    spec_file_path: str
+) -> Dict[str, Any]:
+    """
+    Add rollup spec to task.
+    
+    Args:
+        project_id: Project identifier
+        feature_name: Feature name
+        component_name: Component name
+        deliverable_name: Deliverable name
+        task_id: Task identifier
+        spec_file_path: Path to task rollup spec JSON file
+        
+    Returns:
+        Spec addition result
+    """
+    logger.info(f"Adding rollup spec to task {task_id}")
+    return core_add_spec_to_task(project_id, feature_name, component_name, deliverable_name, task_id, spec_file_path)
 
 
 def main():

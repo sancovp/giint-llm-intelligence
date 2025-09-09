@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "giint-llm-intelligence"
-version = "0.1.2"
+version = "0.1.5"
 description = "GIINT - General Intuitive Intelligence for Neural Transformers: Multi-fire cognitive architecture"
 readme = "README.md"
 requires-python = ">=3.8"

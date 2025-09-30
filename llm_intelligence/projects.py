@@ -8,6 +8,7 @@ Project management with Pydantic validation and JSON registry.
 import os
 import json
 import logging
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -44,6 +45,8 @@ class Task(BaseModel):
     assignee: AssigneeType = Field(..., description="Who is assigned to this task")
     agent_id: Optional[str] = Field(None, description="Agent ID if assignee is AI")
     human_name: Optional[str] = Field(None, description="Human name if assignee is HUMAN")
+    github_issue_id: Optional[str] = Field(None, description="GitHub issue ID if created")
+    github_issue_url: Optional[str] = Field(None, description="GitHub issue URL for reference")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     
@@ -129,6 +132,7 @@ class Project(BaseModel):
     project_dir: str = Field(..., description="Path to project directory") 
     mode: str = Field("planning", description="Current project mode: planning|execution")
     starlog_path: Optional[str] = Field(None, description="Optional path to STARLOG project")
+    github_repo_url: Optional[str] = Field(None, description="Optional GitHub repository URL for issue integration")
     features: Dict[str, Feature] = Field(default_factory=dict, description="Features in this project")
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
@@ -204,7 +208,8 @@ class ProjectRegistry:
         self, 
         project_id: str, 
         project_dir: str, 
-        starlog_path: Optional[str] = None
+        starlog_path: Optional[str] = None,
+        github_repo_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a new project with validation."""
         try:
@@ -212,7 +217,8 @@ class ProjectRegistry:
             project = Project(
                 project_id=project_id,
                 project_dir=project_dir,
-                starlog_path=starlog_path
+                starlog_path=starlog_path,
+                github_repo_url=github_repo_url
             )
             
             # Load existing projects
@@ -260,7 +266,8 @@ class ProjectRegistry:
         self,
         project_id: str,
         project_dir: Optional[str] = None,
-        starlog_path: Optional[str] = None
+        starlog_path: Optional[str] = None,
+        github_repo_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """Update existing project."""
         try:
@@ -278,6 +285,8 @@ class ProjectRegistry:
                 updated_data["project_dir"] = project_dir
             if starlog_path is not None:
                 updated_data["starlog_path"] = starlog_path
+            if github_repo_url is not None:
+                updated_data["github_repo_url"] = github_repo_url
             updated_data["updated_at"] = datetime.now().isoformat()
             
             # Validate updated project
@@ -697,6 +706,27 @@ class ProjectRegistry:
             task.is_ready = is_ready
             task.updated_at = datetime.now().isoformat()
             
+            # GitHub integration: Create issue when task becomes ready
+            if is_ready and not task.github_issue_id and projects[project_id].github_repo_url:
+                github_result = self._create_github_issue(
+                    projects[project_id], feature_name, component_name, deliverable_name, task
+                )
+                if github_result.get("success"):
+                    task.github_issue_id = github_result["issue_id"]
+                    task.github_issue_url = github_result["issue_url"]
+                    logger.info(f"Created GitHub issue {task.github_issue_id} for task {task_id}")
+                else:
+                    logger.warning(f"Failed to create GitHub issue for task {task_id}: {github_result.get('error')}")
+            
+            # GitHub integration: Update issue status when task status changes
+            if task.github_issue_id and projects[project_id].github_repo_url:
+                github_status = task.status.value if hasattr(task.status, 'value') else str(task.status)
+                github_result = self._update_github_issue_status(
+                    projects[project_id], task.github_issue_id, github_status
+                )
+                if not github_result.get("success"):
+                    logger.warning(f"Failed to update GitHub issue {task.github_issue_id}: {github_result.get('error')}")
+            
             projects[project_id].updated_at = datetime.now().isoformat()
             
             # Save
@@ -712,6 +742,134 @@ class ProjectRegistry:
         except Exception as e:
             logger.error(f"Failed to update task {task_id} status: {e}", exc_info=True)
             return {"error": f"Failed to update task status: {e}"}
+    
+    def _get_github_pat(self) -> Optional[str]:
+        """Get GitHub PAT from environment variable."""
+        return os.getenv('GH_PAT')
+    
+    def _create_github_issue(self, project: Project, feature_name: str, component_name: str, deliverable_name: str, task: Task) -> Dict[str, Any]:
+        """Create GitHub issue for task when marked ready."""
+        if not project.github_repo_url:
+            return {"success": False, "error": "No GitHub repo URL configured for project"}
+        
+        gh_pat = self._get_github_pat()
+        if not gh_pat:
+            return {"success": False, "error": "GH_PAT environment variable not set"}
+        
+        try:
+            # Parse repo URL to get owner/repo
+            repo_parts = project.github_repo_url.replace('https://github.com/', '').replace('.git', '').split('/')
+            if len(repo_parts) != 2:
+                return {"success": False, "error": "Invalid GitHub repo URL format"}
+            
+            owner, repo = repo_parts
+            
+            # Create issue title and body
+            title = f"[{feature_name}.{component_name}.{deliverable_name}] {task.task_id}"
+            body = f"""**GIINT Task**: {task.task_id}
+**Project**: {project.project_id}
+**Feature**: {feature_name}
+**Component**: {component_name}  
+**Deliverable**: {deliverable_name}
+**Assignee**: {task.assignee.value}
+
+**Task Spec**: {task.spec.spec_file_path if task.spec else 'No spec file'}
+
+This issue was automatically created by GIINT when the task was marked ready.
+"""
+            
+            # Use gh CLI to create issue
+            cmd = [
+                'gh', 'issue', 'create',
+                '--repo', f"{owner}/{repo}",
+                '--title', title,
+                '--body', body,
+                '--label', 'giint-task,ready',
+                '--label', f'feature:{feature_name}'
+            ]
+            
+            env = os.environ.copy()
+            env['GH_TOKEN'] = gh_pat
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            
+            if result.returncode != 0:
+                logger.error(f"GitHub issue creation failed: {result.stderr}")
+                return {"success": False, "error": f"gh command failed: {result.stderr}"}
+            
+            # Parse issue URL from output
+            issue_url = result.stdout.strip()
+            issue_id = issue_url.split('/')[-1]
+            
+            logger.info(f"Created GitHub issue {issue_id} for task {task.task_id}")
+            return {
+                "success": True,
+                "issue_id": issue_id,
+                "issue_url": issue_url
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to create GitHub issue: {e}")
+            return {"success": False, "error": f"Failed to create GitHub issue: {str(e)}"}
+    
+    def _update_github_issue_status(self, project: Project, issue_id: str, status: str) -> Dict[str, Any]:
+        """Update GitHub issue status (ready -> in-progress -> in-review)."""
+        if not project.github_repo_url:
+            return {"success": False, "error": "No GitHub repo URL configured"}
+        
+        gh_pat = self._get_github_pat()
+        if not gh_pat:
+            return {"success": False, "error": "GH_PAT environment variable not set"}
+        
+        try:
+            repo_parts = project.github_repo_url.replace('https://github.com/', '').replace('.git', '').split('/')
+            if len(repo_parts) != 2:
+                return {"success": False, "error": "Invalid GitHub repo URL format"}
+            
+            owner, repo = repo_parts
+            
+            # Map GIINT status to GitHub labels
+            status_labels = {
+                "ready": ["ready"],
+                "in_progress": ["in-progress"], 
+                "in_review": ["in-review"],
+                "done": ["done"]
+            }
+            
+            if status not in status_labels:
+                return {"success": False, "error": f"Unknown status: {status}"}
+            
+            # Remove old status labels and add new one
+            old_labels = ["ready", "in-progress", "in-review", "done"]
+            for old_label in old_labels:
+                subprocess.run([
+                    'gh', 'issue', 'edit', issue_id,
+                    '--repo', f"{owner}/{repo}",
+                    '--remove-label', old_label
+                ], env={'GH_TOKEN': gh_pat}, capture_output=True)
+            
+            # Add new status label
+            cmd = [
+                'gh', 'issue', 'edit', issue_id,
+                '--repo', f"{owner}/{repo}",
+                '--add-label', status_labels[status][0]
+            ]
+            
+            env = os.environ.copy()
+            env['GH_TOKEN'] = gh_pat
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            
+            if result.returncode != 0:
+                logger.error(f"GitHub issue update failed: {result.stderr}")
+                return {"success": False, "error": f"gh command failed: {result.stderr}"}
+            
+            logger.info(f"Updated GitHub issue {issue_id} status to {status}")
+            return {"success": True, "message": f"Issue {issue_id} updated to {status}"}
+            
+        except Exception as e:
+            logger.error(f"Failed to update GitHub issue: {e}")
+            return {"success": False, "error": f"Failed to update GitHub issue: {str(e)}"}
 
 
 # Global registry instance
@@ -726,17 +884,17 @@ def get_registry() -> ProjectRegistry:
 
 
 # Convenience functions
-def create_project(project_id: str, project_dir: str, starlog_path: Optional[str] = None) -> Dict[str, Any]:
+def create_project(project_id: str, project_dir: str, starlog_path: Optional[str] = None, github_repo_url: Optional[str] = None) -> Dict[str, Any]:
     """Create a new project."""
-    return get_registry().create_project(project_id, project_dir, starlog_path)
+    return get_registry().create_project(project_id, project_dir, starlog_path, github_repo_url)
 
 def get_project(project_id: str) -> Dict[str, Any]:
     """Get project by ID.""" 
     return get_registry().get_project(project_id)
 
-def update_project(project_id: str, project_dir: Optional[str] = None, starlog_path: Optional[str] = None) -> Dict[str, Any]:
+def update_project(project_id: str, project_dir: Optional[str] = None, starlog_path: Optional[str] = None, github_repo_url: Optional[str] = None) -> Dict[str, Any]:
     """Update existing project."""
-    return get_registry().update_project(project_id, project_dir, starlog_path)
+    return get_registry().update_project(project_id, project_dir, starlog_path, github_repo_url)
 
 def list_projects() -> Dict[str, Any]:
     """List all projects."""

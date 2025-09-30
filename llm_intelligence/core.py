@@ -35,7 +35,8 @@ def respond(
     workflow_id: str,
     response_file_path: Optional[str] = None,
     simple_response_string: Optional[str] = None,
-    is_from_waypoint: bool = False
+    is_from_waypoint: bool = False,
+    starlog_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Harvest response into QA conversation with unified simple/complex interface.
@@ -56,6 +57,7 @@ def respond(
         response_file_path: Path to response file (complex workflow)
         simple_response_string: Direct response content (simple workflow)
         is_from_waypoint: Whether this is from a STARLOG waypoint
+        starlog_path: Optional STARLOG project path for debug diary integration
         
     Returns:
         Success confirmation with details
@@ -67,7 +69,12 @@ def respond(
             logger.error(f"Project validation failed: {project_result['error']}")
             return {"error": f"Project validation failed: {project_result['error']}"}
         
-        # 2. Handle both simple and complex response modes
+        # 2. Directory validation guardrail
+        if response_file_path and os.path.isdir(response_file_path):
+            logger.error(f"Directory validation failed: {response_file_path}")
+            return {"error": f"❌ Error: response_file_path cannot be a directory: {response_file_path}"}
+        
+        # 3. Handle both simple and complex response modes
         if simple_response_string and response_file_path:
             return {"error": "Cannot specify both simple_response_string and response_file_path"}
         
@@ -197,7 +204,8 @@ def respond(
                 task=task,
                 workflow_id=workflow_id,
                 is_from_waypoint=is_from_waypoint,
-                one_liner=one_liner
+                one_liner=one_liner,
+                starlog_path=starlog_path
             )
         except Exception as e:
             # Non-fatal - STARLOG integration might not be available
@@ -211,7 +219,8 @@ def respond(
             "one_liner": one_liner,
             "user_prompt_description": user_prompt_description,
             "tracking": qa_data["tracking"],
-            "mode": "simple" if simple_response_string else "complex"
+            "mode": "simple" if simple_response_string else "complex",
+            "giint_reminder": "[GIINT]: Level -- REMINDER | You can use blueprints and metastack model blueprints with core__respond() to make it more powerful and help future instances of yourself perform better."
         }
         
         if response_path:
@@ -580,7 +589,8 @@ def log_to_starlog_debug_diary(
     task: str,
     workflow_id: str,
     is_from_waypoint: bool,
-    one_liner: str
+    one_liner: str,
+    starlog_path: Optional[str] = None
 ) -> None:
     """
     Log to STARLOG debug diary with exact format specified.
@@ -588,15 +598,41 @@ def log_to_starlog_debug_diary(
     Format: {{DATETIME}}.{{QA_ID}}.{{RESPONSE_ID}}.{{PROJECT}}.{{FEATURE}}.{{COMPONENT}}.{{DELIVERABLE}}.{{SUBTASK}}.{{TASK}}.{{WORKFLOW}}.{{IS_FROM_WAYPOINT}}: {{one_liner}}
     """
     try:
-        # This would call STARLOG MCP if available
-        # For now, just print to show the format
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         entry = f"{timestamp}.{qa_id}.{response_id}.{project_id}.{feature}.{component}.{deliverable}.{subtask}.{task}.{workflow_id}.{is_from_waypoint}: {one_liner}"
         
         logger.info(f"STARLOG DEBUG DIARY: {entry}")
         
-        # TODO: Implement actual STARLOG integration
-        # update_debug_diary(content=entry)
+        # If starlog_path provided, log to STARLOG debug diary
+        if starlog_path:
+            try:
+                # Import STARLOG models and HEAVEN registry
+                from starlog_mcp.models import DebugDiaryEntry
+                from heaven_base.tools.registry_tool import registry_util_func
+                import os
+                
+                # Set HEAVEN_DATA_DIR for registry access
+                os.environ['HEAVEN_DATA_DIR'] = '/tmp/heaven_data'
+                
+                # Get project name from starlog_path
+                project_name = os.path.basename(starlog_path.rstrip('/'))
+                
+                # Create STARLOG debug diary entry
+                content = f"[GIINT] respond() executed: QA {qa_id} | {one_liner}"
+                diary_entry = DebugDiaryEntry(content=content)
+                
+                # Write directly to HEAVEN registry (same as STARLOG does internally)
+                registry_util_func("add", 
+                                 registry_name=f"{project_name}_debug_diary",
+                                 key=diary_entry.id,
+                                 value_dict=diary_entry.model_dump(mode='json'))
+                
+                logger.info(f"Logged to STARLOG debug diary: {content}")
+                
+            except ImportError as e:
+                logger.warning(f"STARLOG integration not available: {e}")
+            except Exception as e:
+                logger.error(f"STARLOG integration failed: {e}", exc_info=True)
         
     except Exception as e:
         logger.error(f"STARLOG logging failed: {e}", exc_info=True)
